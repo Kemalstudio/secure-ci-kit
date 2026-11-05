@@ -1,0 +1,90 @@
+# Tests the kit on itself, in both directions:
+#   1. examples/vulnerable-app — every scanner MUST report findings.
+#      If one reports zero, the scanner is broken and the test fails.
+#   2. examples/secure-app — the full gate MUST pass with zero findings.
+#      This catches false positives and noisy rules.
+#
+# The weekly schedule matters: new CVEs are published every day, so a
+# dependency that was clean last week can fail this week.
+
+name: Self-test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+  actions: read
+  security-events: write
+
+concurrency:
+  group: self-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  actionlint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run actionlint (with shellcheck)
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+
+  vulnerable-app:
+    name: Scan vulnerable-app
+    uses: ./.github/workflows/scan.yml
+    with:
+      name: vulnerable-app
+      path: examples/vulnerable-app
+      dockerfile: examples/vulnerable-app/Dockerfile
+      scan-git-history: false
+      fail-on-findings: false
+
+  expect-findings:
+    name: Every scanner caught something
+    needs: vulnerable-app
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check finding counts
+        env:
+          SECRETS: ${{ needs.vulnerable-app.outputs.secrets }}
+          SAST: ${{ needs.vulnerable-app.outputs.sast }}
+          DEPS: ${{ needs.vulnerable-app.outputs.deps }}
+          IAC: ${{ needs.vulnerable-app.outputs.iac }}
+          IMAGE: ${{ needs.vulnerable-app.outputs.image }}
+        run: |
+          failed=0
+          for scanner in SECRETS SAST DEPS IAC IMAGE; do
+            count="${!scanner:-0}"
+            if [ "$count" -gt 0 ]; then
+              echo "✅ $scanner: $count finding(s)"
+            else
+              echo "::error::$scanner found nothing in the intentionally vulnerable app"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
+  secure-app:
+    name: Scan secure-app
+    uses: ./.github/workflows/scan.yml
+    with:
+      name: secure-app
+      path: examples/secure-app
+      dockerfile: examples/secure-app/Dockerfile
+      scan-git-history: false
+      fail-on-findings: true
