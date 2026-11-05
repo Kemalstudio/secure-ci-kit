@@ -1,0 +1,3 @@
+# Always LF, also on Windows checkouts: CRLF breaks shell scripts and
+# shebangs inside Linux containers.
+* text=auto eol=lf
