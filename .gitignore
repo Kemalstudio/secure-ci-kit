@@ -1,0 +1,19 @@
+# Scan output
+reports/
+image.tar
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local secrets
+.env
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
