@@ -1,0 +1,459 @@
+# secure-ci-kit — reusable security scanning workflow.
+#
+# Call it from any repository:
+#
+#   jobs:
+#     security:
+#       uses: Kemalstudio/secure-ci-kit/.github/workflows/scan.yml@v1
+#       permissions:
+#         contents: read
+#         actions: read
+#         security-events: write
+#
+# Every scanner runs in its own job, in parallel. Scanner jobs never fail on
+# findings themselves: they report a count. The final "gate" job adds the
+# counts up, writes a summary table and decides whether the run fails.
+
+name: secure-ci-kit
+
+on:
+  workflow_call:
+    inputs:
+      path:
+        description: Directory to scan, relative to the repository root.
+        type: string
+        default: "."
+      name:
+        description: >-
+          Short name for this scan, used in artifact names and SARIF categories.
+          Must be unique if you call the kit more than once in one workflow run.
+        type: string
+        default: "scan"
+      dockerfile:
+        description: Path to a Dockerfile. When set, the image is built, scanned and an SBOM is generated.
+        type: string
+        default: ""
+      docker-context:
+        description: Docker build context. Defaults to the directory of the Dockerfile.
+        type: string
+        default: ""
+      severity:
+        description: Comma-separated Trivy severities that count as findings.
+        type: string
+        default: "CRITICAL,HIGH"
+      ignore-unfixed:
+        description: Ignore vulnerabilities that have no fixed version yet.
+        type: boolean
+        default: true
+      semgrep-config:
+        description: Semgrep ruleset(s), space-separated.
+        type: string
+        default: "p/default"
+      scan-git-history:
+        description: Scan the whole git history for secrets, not only the files in `path`.
+        type: boolean
+        default: true
+      skip:
+        description: Comma-separated scanners to skip, e.g. "iac,sast". Options are secrets, sast, deps, iac.
+        type: string
+        default: ""
+      fail-on-findings:
+        description: Fail the workflow when any scanner reports findings.
+        type: boolean
+        default: true
+      upload-sarif:
+        description: >-
+          Upload results to the GitHub Security tab. Private repositories need
+          GitHub Advanced Security for this; the upload is skipped with a warning otherwise.
+        type: boolean
+        default: true
+    outputs:
+      secrets:
+        description: Number of leaked secrets found.
+        value: ${{ jobs.secrets.outputs.findings }}
+      sast:
+        description: Number of code issues found.
+        value: ${{ jobs.sast.outputs.findings }}
+      deps:
+        description: Number of vulnerable dependencies found.
+        value: ${{ jobs.deps.outputs.findings }}
+      iac:
+        description: Number of failed IaC / Dockerfile checks.
+        value: ${{ jobs.iac.outputs.findings }}
+      image:
+        description: Number of vulnerabilities found in the container image.
+        value: ${{ jobs.image.outputs.findings }}
+      total:
+        description: Total number of findings.
+        value: ${{ jobs.gate.outputs.total }}
+
+# Scanner images are pinned by digest: a tag can be moved to point at
+# different content, a digest cannot.
+env:
+  GITLEAKS_IMAGE: zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+  SEMGREP_IMAGE: semgrep/semgrep:1.181.0@sha256:81474464c1f07483ba0682a44787fd93c91397419762a04abe2bafaae396304b
+  TRIVY_IMAGE: aquasec/trivy:0.76.0@sha256:2416d1f74045b57274df1a340eee6b510cacd73c66a6ccb8da092b117eb7d222
+  CHECKOV_IMAGE: bridgecrew/checkov:3.3.30@sha256:4b65e89f1fde292249fc0aa0d0db43302c036dfe39f7370b2d3517571082b894
+
+jobs:
+  secrets:
+    name: Secrets (Gitleaks)
+    if: ${{ !contains(format(',{0},', inputs.skip), ',secrets,') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    outputs:
+      findings: ${{ steps.count.outputs.findings }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Strings on purpose: in expressions `true && 0 || 1` evaluates to 1,
+          # because 0 is falsy.
+          fetch-depth: ${{ inputs.scan-git-history && '0' || '1' }}
+          persist-credentials: false
+
+      - name: Run Gitleaks
+        env:
+          SCAN_PATH: ${{ inputs.path }}
+          SCAN_HISTORY: ${{ inputs.scan-git-history }}
+        run: |
+          mkdir -p reports
+          if [ "$SCAN_HISTORY" = "true" ]; then
+            target=(git .)
+          else
+            target=(dir "$SCAN_PATH")
+          fi
+          # safe.directory: the checkout belongs to the runner user, not to the
+          # container user, and git refuses to read it otherwise.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+            -v "$PWD:/src" -w /src --entrypoint gitleaks "$GITLEAKS_IMAGE" \
+            "${target[@]}" --redact --no-banner --exit-code 0 \
+            --report-format sarif --report-path reports/gitleaks.sarif
+
+      - name: Count findings
+        id: count
+        run: echo "findings=$(jq '[.runs[]?.results[]?] | length' reports/gitleaks.sarif)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Security tab
+        if: inputs.upload-sarif
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: reports/gitleaks.sarif
+          category: ${{ inputs.name }}-gitleaks
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.name }}-secrets
+          path: reports/
+          retention-days: 14
+
+  sast:
+    name: Code (Semgrep)
+    if: ${{ !contains(format(',{0},', inputs.skip), ',sast,') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    outputs:
+      findings: ${{ steps.count.outputs.findings }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Semgrep
+        env:
+          SCAN_PATH: ${{ inputs.path }}
+          SEMGREP_CONFIG: ${{ inputs.semgrep-config }}
+        run: |
+          mkdir -p reports
+          read -r -a configs <<< "$SEMGREP_CONFIG"
+          config_args=()
+          for c in "${configs[@]}"; do config_args+=(--config "$c"); done
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:/src" -w /src --entrypoint semgrep "$SEMGREP_IMAGE" \
+            scan "${config_args[@]}" --metrics off --disable-version-check \
+            --sarif --output reports/semgrep.sarif "$SCAN_PATH"
+
+      - name: Count findings
+        id: count
+        run: echo "findings=$(jq '[.runs[]?.results[]?] | length' reports/semgrep.sarif)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Security tab
+        if: inputs.upload-sarif
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: reports/semgrep.sarif
+          category: ${{ inputs.name }}-semgrep
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.name }}-sast
+          path: reports/
+          retention-days: 14
+
+  deps:
+    name: Dependencies (Trivy)
+    if: ${{ !contains(format(',{0},', inputs.skip), ',deps,') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    outputs:
+      findings: ${{ steps.count.outputs.findings }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Trivy (filesystem)
+        env:
+          SCAN_PATH: ${{ inputs.path }}
+          SEVERITY: ${{ inputs.severity }}
+          IGNORE_UNFIXED: ${{ inputs.ignore-unfixed }}
+        run: |
+          mkdir -p reports
+          extra=()
+          if [ "$IGNORE_UNFIXED" = "true" ]; then extra+=(--ignore-unfixed); fi
+          trivy() {
+            docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD:/src" -w /src --entrypoint trivy "$TRIVY_IMAGE" "$@"
+          }
+          trivy fs --scanners vuln --severity "$SEVERITY" "${extra[@]}" \
+            --cache-dir /tmp/trivy --format json --output reports/trivy-deps.json "$SCAN_PATH"
+          trivy convert --format sarif --output reports/trivy-deps.sarif reports/trivy-deps.json
+
+      - name: Count findings
+        id: count
+        run: echo "findings=$(jq '[.Results[]?.Vulnerabilities[]?] | length' reports/trivy-deps.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Security tab
+        if: inputs.upload-sarif
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: reports/trivy-deps.sarif
+          category: ${{ inputs.name }}-trivy-deps
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.name }}-deps
+          path: reports/
+          retention-days: 14
+
+  iac:
+    name: Dockerfile & IaC (Checkov)
+    if: ${{ !contains(format(',{0},', inputs.skip), ',iac,') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    outputs:
+      findings: ${{ steps.count.outputs.findings }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Checkov
+        env:
+          SCAN_PATH: ${{ inputs.path }}
+        run: |
+          mkdir -p reports
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+            -v "$PWD:/src" -w /src --entrypoint checkov "$CHECKOV_IMAGE" \
+            --directory "$SCAN_PATH" \
+            --framework dockerfile kubernetes helm terraform github_actions \
+            --output sarif --output-file-path reports \
+            --soft-fail --quiet --compact
+          # Checkov names the file itself; no file means nothing to scan.
+          if [ -f reports/results_sarif.sarif ]; then
+            # Checkov prefixes Kubernetes file paths with the scan directory
+            # twice (dir/dir/file.yaml), which breaks the links in the
+            # Security tab. Strip the duplicate prefix.
+            prefix="${SCAN_PATH%/}/"
+            jq --arg p "$prefix" \
+              'walk(if type == "string" and $p != "./" and startswith($p + $p) then .[($p | length):] else . end)' \
+              reports/results_sarif.sarif > reports/checkov.sarif
+            rm reports/results_sarif.sarif
+          fi
+
+      - name: Count findings
+        id: count
+        run: |
+          if [ -f reports/checkov.sarif ]; then
+            echo "findings=$(jq '[.runs[]?.results[]?] | length' reports/checkov.sarif)" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Checkov found no Dockerfile, Kubernetes, Helm, Terraform or workflow files to scan."
+            echo "findings=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload to GitHub Security tab
+        if: inputs.upload-sarif && hashFiles('reports/checkov.sarif') != ''
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: reports/checkov.sarif
+          category: ${{ inputs.name }}-checkov
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.name }}-iac
+          path: reports/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  image:
+    name: Container image (Trivy + SBOM)
+    if: inputs.dockerfile != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    outputs:
+      findings: ${{ steps.count.outputs.findings }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build image
+        env:
+          DOCKERFILE: ${{ inputs.dockerfile }}
+          DOCKER_CONTEXT: ${{ inputs.docker-context }}
+        run: |
+          context="${DOCKER_CONTEXT:-$(dirname "$DOCKERFILE")}"
+          docker build --pull --tag secure-ci-kit/scan-target:local --file "$DOCKERFILE" "$context"
+          # Trivy reads the saved image, so it never needs access to the
+          # Docker socket (which would be root on the runner).
+          docker save secure-ci-kit/scan-target:local --output image.tar
+
+      - name: Run Trivy (image) and generate SBOM
+        env:
+          SEVERITY: ${{ inputs.severity }}
+          IGNORE_UNFIXED: ${{ inputs.ignore-unfixed }}
+        run: |
+          mkdir -p reports
+          extra=()
+          if [ "$IGNORE_UNFIXED" = "true" ]; then extra+=(--ignore-unfixed); fi
+          trivy() {
+            docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
+              -v "$PWD:/src" -w /src --entrypoint trivy "$TRIVY_IMAGE" "$@"
+          }
+          trivy image --input image.tar --scanners vuln --severity "$SEVERITY" "${extra[@]}" \
+            --cache-dir /tmp/trivy --format json --output reports/trivy-image.json
+          trivy convert --format sarif --output reports/trivy-image.sarif reports/trivy-image.json
+          trivy image --input image.tar --cache-dir /tmp/trivy \
+            --format cyclonedx --output reports/sbom.cdx.json
+          rm -f image.tar
+
+      - name: Count findings
+        id: count
+        run: echo "findings=$(jq '[.Results[]?.Vulnerabilities[]?] | length' reports/trivy-image.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to GitHub Security tab
+        if: inputs.upload-sarif
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: reports/trivy-image.sarif
+          category: ${{ inputs.name }}-trivy-image
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.name }}-image
+          path: reports/
+          retention-days: 14
+
+  gate:
+    name: Security gate
+    if: always()
+    needs: [secrets, sast, deps, iac, image]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      total: ${{ steps.gate.outputs.total }}
+    steps:
+      - name: Summarize and decide
+        id: gate
+        env:
+          NAME: ${{ inputs.name }}
+          SCAN_PATH: ${{ inputs.path }}
+          FAIL_ON_FINDINGS: ${{ inputs.fail-on-findings }}
+          SECRETS_RESULT: ${{ needs.secrets.result }}
+          SECRETS_COUNT: ${{ needs.secrets.outputs.findings }}
+          SAST_RESULT: ${{ needs.sast.result }}
+          SAST_COUNT: ${{ needs.sast.outputs.findings }}
+          DEPS_RESULT: ${{ needs.deps.result }}
+          DEPS_COUNT: ${{ needs.deps.outputs.findings }}
+          IAC_RESULT: ${{ needs.iac.result }}
+          IAC_COUNT: ${{ needs.iac.outputs.findings }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+          IMAGE_COUNT: ${{ needs.image.outputs.findings }}
+        run: |
+          total=0
+          broken=0
+          {
+            echo "## 🔒 secure-ci-kit: \`$NAME\`"
+            echo
+            echo "Scanned path: \`$SCAN_PATH\`"
+            echo
+            echo "| Scanner | Findings | Status |"
+            echo "| :--- | ---: | :--- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          row() {
+            local label=$1 result=$2 count=${3:-0}
+            case "$result" in
+              skipped)
+                echo "| $label | – | ⏭️ skipped |" >> "$GITHUB_STEP_SUMMARY" ;;
+              success)
+                total=$((total + count))
+                if [ "$count" -gt 0 ]; then
+                  echo "| $label | $count | ❌ findings |" >> "$GITHUB_STEP_SUMMARY"
+                else
+                  echo "| $label | 0 | ✅ clean |" >> "$GITHUB_STEP_SUMMARY"
+                fi ;;
+              *)
+                broken=1
+                echo "| $label | – | ⚠️ scanner $result |" >> "$GITHUB_STEP_SUMMARY" ;;
+            esac
+          }
+
+          row "Secrets (Gitleaks)"              "$SECRETS_RESULT" "$SECRETS_COUNT"
+          row "Code (Semgrep)"                  "$SAST_RESULT"    "$SAST_COUNT"
+          row "Dependencies (Trivy)"            "$DEPS_RESULT"    "$DEPS_COUNT"
+          row "Dockerfile & IaC (Checkov)"      "$IAC_RESULT"     "$IAC_COUNT"
+          row "Container image (Trivy)"         "$IMAGE_RESULT"   "$IMAGE_COUNT"
+
+          {
+            echo
+            echo "**Total findings: $total**"
+            echo
+            echo "Full reports are attached to this run as artifacts and, when enabled, in the Security tab."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+
+          if [ "$broken" -ne 0 ]; then
+            echo "::error::At least one scanner did not finish. A broken scanner must not look like a clean result."
+            exit 1
+          fi
+          if [ "$FAIL_ON_FINDINGS" = "true" ] && [ "$total" -gt 0 ]; then
+            echo "::error::$total security finding(s). See the job summary for details."
+            exit 1
+          fi
