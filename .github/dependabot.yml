@@ -1,0 +1,24 @@
+# examples/vulnerable-app is left out on purpose: its dependencies are
+# supposed to stay vulnerable.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /examples/secure-app
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /examples/secure-app
+    schedule:
+      interval: weekly
