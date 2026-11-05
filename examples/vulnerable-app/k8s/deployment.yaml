@@ -1,0 +1,34 @@
+# INTENTIONALLY INSECURE Kubernetes manifest. DO NOT APPLY.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vulnerable-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vulnerable-app
+  template:
+    metadata:
+      labels:
+        app: vulnerable-app
+    spec:
+      # BUG: shares the node's network and process namespaces.
+      hostNetwork: true
+      hostPID: true
+      containers:
+        - name: app
+          # BUG: mutable tag; you never know what actually runs.
+          image: vulnerable-app:latest
+          ports:
+            - containerPort: 5000
+          securityContext:
+            # BUG: full access to the host; a container escape is trivial.
+            privileged: true
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+          env:
+            # BUG: secret in plain text instead of a Secret object.
+            - name: DB_PASSWORD
+              value: "SuperSecretPassw0rd!"
+          # BUG: no resource limits, no liveness/readiness probes.
