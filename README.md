@@ -47,6 +47,19 @@ flowchart LR
 - Scanner jobs only **count** findings. The final **gate** job adds them up, writes the summary and decides pass/fail. You see every problem at once, not just the first scanner that failed.
 - If a scanner crashes, the gate fails. **A broken scanner must never look like a clean result.**
 
+## Why not add each scanner yourself?
+
+You can, and every tool here is excellent on its own. The kit is the glue you would otherwise write and maintain in every repository:
+
+| | Each scanner on its own | secure-ci-kit |
+| :--- | :--- | :--- |
+| Setup | One workflow (or several jobs) per tool, each with its own flags and SARIF handling | One `uses:` line |
+| Failure behavior | The first failing tool stops the job; you fix one problem, push, find the next | All scanners run; you see every finding in one summary table |
+| Crashed scanner | Often indistinguishable from "no findings" | The gate fails with a clear error |
+| Supply chain of the CI itself | Up to you: tags, `latest` images, broad tokens | Actions pinned by SHA, images by digest, least-privilege tokens, no Docker socket |
+| Does it actually catch bugs? | Hard to know until something slips through | Proven on every run against an intentionally vulnerable app and its fixed twin |
+| Updates | Bump every tool in every repo | Bump one version tag |
+
 ## Proof that it works: the self-test
 
 The repository tests the kit on itself in **both directions** on every push and every Monday:
@@ -171,6 +184,12 @@ docker run --rm -v "$PWD:/src" -w /src bridgecrew/checkov:3.3.30 -d . --quiet --
 - [ ] Pull request comment with the summary table
 - [ ] Cache the Trivy vulnerability database between jobs
 - [ ] `--require-hashes` for pip in the secure example
+
+## Contributing
+
+Bug reports, false-positive reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md). Issues labelled [`good first issue`](https://github.com/Kemalstudio/secure-ci-kit/labels/good%20first%20issue) are a good place to start.
+
+If the kit saved you some work, a ⭐ helps other people find it.
 
 ## License
 

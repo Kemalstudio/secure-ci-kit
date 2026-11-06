@@ -4,7 +4,7 @@
 #
 #   jobs:
 #     security:
-#       uses: Kemalstudio/secure-ci-kit/.github/workflows/scan.yml@v1
+#       uses: Kemalstudio/secure-ci-kit/.github/workflows/scan.yml@v0.1.0
 #       permissions:
 #         contents: read
 #         actions: read

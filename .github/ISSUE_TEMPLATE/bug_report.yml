@@ -1,0 +1,35 @@
+name: Bug or false positive
+description: The kit failed, crashed, or reported something that is not a real problem.
+labels: [bug]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What happened?
+      options:
+        - The workflow failed or a scanner crashed
+        - False positive (reported something that is not a problem)
+        - False negative (missed a real problem)
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: usage
+    attributes:
+      label: Your workflow snippet
+      description: The job that calls secure-ci-kit, including the version tag and `with:` inputs.
+      render: yaml
+    validations:
+      required: true
+  - type: input
+    id: run
+    attributes:
+      label: Link to the run
+      description: A link to the failing run, if the repository is public.
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What you expected, what you got, and the relevant part of the job summary or log.
+    validations:
+      required: true
