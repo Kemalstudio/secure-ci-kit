@@ -2,7 +2,7 @@
 
 # FIX (EOL base image): a supported Python on a small Alpine base, pinned by
 # digest so the build is reproducible. Dependabot updates the digest.
-FROM python:3.14.9-alpine3.24@sha256:dbeb11d16bb95c3a7e3c25c842cb9f20cbc8c18f8be0461a4a0dcc861ad386a0 AS build
+FROM python:3.15.0-alpine3.24@sha256:2699b90f4d562a22e2dd076c82f964032f64814204bff36d271a54ba4cc2c7e2 AS build
 
 WORKDIR /build
 COPY requirements.txt .
@@ -14,7 +14,7 @@ RUN python -m venv /venv \
     && /venv/bin/pip uninstall --yes pip
 
 # Runtime stage: only the virtualenv and the app, no build leftovers.
-FROM python:3.14.9-alpine3.24@sha256:dbeb11d16bb95c3a7e3c25c842cb9f20cbc8c18f8be0461a4a0dcc861ad386a0
+FROM python:3.15.0-alpine3.24@sha256:2699b90f4d562a22e2dd076c82f964032f64814204bff36d271a54ba4cc2c7e2
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
