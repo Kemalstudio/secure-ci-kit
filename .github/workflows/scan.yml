@@ -141,7 +141,7 @@ jobs:
       - name: Upload to GitHub Security tab
         if: inputs.upload-sarif
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: reports/gitleaks.sarif
           category: ${{ inputs.name }}-gitleaks
@@ -189,7 +189,7 @@ jobs:
       - name: Upload to GitHub Security tab
         if: inputs.upload-sarif
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: reports/semgrep.sarif
           category: ${{ inputs.name }}-semgrep
@@ -240,7 +240,7 @@ jobs:
       - name: Upload to GitHub Security tab
         if: inputs.upload-sarif
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: reports/trivy-deps.sarif
           category: ${{ inputs.name }}-trivy-deps
@@ -303,7 +303,7 @@ jobs:
       - name: Upload to GitHub Security tab
         if: inputs.upload-sarif && hashFiles('reports/checkov.sarif') != ''
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: reports/checkov.sarif
           category: ${{ inputs.name }}-checkov
@@ -368,7 +368,7 @@ jobs:
       - name: Upload to GitHub Security tab
         if: inputs.upload-sarif
         continue-on-error: true
-        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        uses: github/codeql-action/upload-sarif@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
         with:
           sarif_file: reports/trivy-image.sarif
           category: ${{ inputs.name }}-trivy-image
