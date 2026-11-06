@@ -6,8 +6,12 @@ FROM python:3.14.9-alpine3.24@sha256:dbeb11d16bb95c3a7e3c25c842cb9f20cbc8c18f8be
 
 WORKDIR /build
 COPY requirements.txt .
+# pip is removed from the virtualenv once the dependencies are installed: the
+# app does not need it at runtime, and its vendored libraries (urllib3,
+# msgpack, ...) would otherwise ship CVEs that the app never uses.
 RUN python -m venv /venv \
-    && /venv/bin/pip install --no-cache-dir -r requirements.txt
+    && /venv/bin/pip install --no-cache-dir -r requirements.txt \
+    && /venv/bin/pip uninstall --yes pip
 
 # Runtime stage: only the virtualenv and the app, no build leftovers.
 FROM python:3.14.9-alpine3.24@sha256:dbeb11d16bb95c3a7e3c25c842cb9f20cbc8c18f8be0461a4a0dcc861ad386a0
@@ -16,7 +20,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 # FIX (runs as root): a dedicated unprivileged user.
-RUN addgroup -S app && adduser -S -G app -H app
+# No package manager at runtime: remove the base image's pip and ensurepip, so
+# their vendored libraries are not in the final image.
+RUN addgroup -S app && adduser -S -G app -H app \
+    && python -m pip uninstall --yes pip \
+    && rm -rf /usr/local/lib/python3*/ensurepip
 
 WORKDIR /app
 COPY --from=build /venv /venv

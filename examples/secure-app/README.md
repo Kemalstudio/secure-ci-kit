@@ -14,6 +14,7 @@ The self-test requires this folder to pass **all** scanners with zero findings.
 | Outdated dependencies | Current versions, all pinned, updated by Dependabot |
 | EOL base image, root user, `ADD`, port 22 | Supported Alpine image pinned by digest, non-root user, `COPY`, port 8000 only |
 | No healthcheck | `HEALTHCHECK` on `/health` |
+| Package manager left in the image | pip removed from the runtime image: its vendored libraries (urllib3, msgpack, setuptools) carry CVEs the app never uses |
 
 ## Run it
 
